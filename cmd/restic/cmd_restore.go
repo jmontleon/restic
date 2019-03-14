@@ -6,6 +6,9 @@ import (
 	"github.com/restic/restic/internal/filter"
 	"github.com/restic/restic/internal/restic"
 	"github.com/restic/restic/internal/restorer"
+	"github.com/restic/restic/internal/walker"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -38,6 +41,8 @@ type RestoreOptions struct {
 	Paths              []string
 	Tags               restic.TagLists
 	Verify             bool
+	SkipUnchanged      bool
+	Delete             bool
 }
 
 var restoreOptions RestoreOptions
@@ -56,6 +61,8 @@ func init() {
 	flags.Var(&restoreOptions.Tags, "tag", "only consider snapshots which include this `taglist` for snapshot ID \"latest\"")
 	flags.StringArrayVar(&restoreOptions.Paths, "path", nil, "only consider snapshots which include this (absolute) `path` for snapshot ID \"latest\"")
 	flags.BoolVar(&restoreOptions.Verify, "verify", false, "verify restored files content")
+	flags.BoolVar(&restoreOptions.SkipUnchanged, "skip-unchanged", false, "skip files that have not changed base on size and date")
+	flags.BoolVar(&restoreOptions.Delete, "delete", false, "delete files in the target that do not exist in the snapshot")
 }
 
 func runRestore(opts RestoreOptions, gopts GlobalOptions, args []string) error {
@@ -178,7 +185,69 @@ func runRestore(opts RestoreOptions, gopts GlobalOptions, args []string) error {
 		res.SelectFilter = selectIncludeFilter
 	}
 
+	if opts.SkipUnchanged {
+		Printf("Skip Unchanged True\n")
+	}
+
 	Verbosef("restoring %s to %s\n", res.Snapshot(), opts.Target)
+
+	if opts.Delete {
+		var restorefiles []string
+		var targetfiles []string
+		var deletefiles []string
+
+		Printf("Delete true\n")
+		repo, err := OpenRepository(gopts)
+		if err != nil {
+			return err
+		}
+
+		if err = repo.LoadIndex(gopts.ctx); err != nil {
+			return err
+		}
+
+		for sn := range FindFilteredSnapshots(ctx, repo, opts.Host, opts.Tags, opts.Paths, args[:1]) {
+			err := walker.Walk(ctx, repo, *sn.Tree, nil, func(_ restic.ID, nodepath string, node *restic.Node, err error) (bool, error) {
+				if err != nil {
+					return false, err
+				}
+				if node == nil {
+					return false, nil
+				}
+				restorefiles = append(restorefiles, filepath.Clean(opts.Target+nodepath))
+				return false, nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		err = filepath.Walk(opts.Target, func(path string, info os.FileInfo, err error) error {
+			targetfiles = append(targetfiles, path)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		for _, targetfile := range targetfiles {
+			var exists = false
+			for _, restorefile := range restorefiles {
+				if targetfile == restorefile || targetfile == opts.Target {
+					exists = true
+					break
+				}
+			}
+			if exists != true {
+				deletefiles = append(deletefiles, targetfile)
+			}
+		}
+
+		for _, deletefile := range deletefiles {
+			os.RemoveAll(deletefile)
+		}
+
+	}
 
 	err = res.RestoreTo(ctx, opts.Target)
 	if err == nil && opts.Verify {
