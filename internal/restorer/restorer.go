@@ -299,7 +299,7 @@ func (res *Restorer) VerifyFiles(ctx context.Context, dst string, skipUnchanged 
 	// TODO multithreaded?
 
 	count := 0
-	err := res.traverseTree(ctx, dst, string(filepath.Separator), skipUnchanged, *res.sn.Tree, treeVisitor{
+	err := res.traverseTree(ctx, dst, string(filepath.Separator), false, *res.sn.Tree, treeVisitor{
 		enterDir: func(node *restic.Node, target, location string) error { return nil },
 		visitNode: func(node *restic.Node, target, location string) error {
 			if node.Type != "file" {
